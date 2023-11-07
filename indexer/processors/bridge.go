@@ -323,7 +323,7 @@ func (b *BridgeProcessor) processFinalizedL1Events() error {
 
 		l1BridgeLog = l1BridgeLog.New("from_block_number", fromL1Height, "to_block_number", toL1Height)
 		l1BridgeLog.Info("scanning for finalized bridge events")
-		return bridge.L1ProcessFinalizedBridgeEvents(l1BridgeLog, tx, b.metrics, b.chainConfig.L1Contracts, fromL1Height, toL1Height)
+		return bridge.L1ProcessFinalizedBridgeEvents(l1BridgeLog, tx, b.metrics, b.l1Etl.EthClient, b.chainConfig.L1Contracts, fromL1Height, toL1Height)
 	}); err != nil {
 		return err
 	}

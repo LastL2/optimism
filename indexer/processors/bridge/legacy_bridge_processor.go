@@ -263,15 +263,14 @@ func LegacyL1ProcessFinalizedBridgeEvents(log log.Logger, db *database.DB, metri
 		log.Info("detected relayed messages", "size", len(crossDomainRelayedMessages))
 	}
 
-	skippedPreRegenesisMessages := 0
+	skippedOVM1Messages := 0
 	for i := range crossDomainRelayedMessages {
 		relayedMessage := crossDomainRelayedMessages[i]
 		message, err := db.BridgeMessages.L2BridgeMessage(relayedMessage.MessageHash)
 		if err != nil {
 			return err
 		} else if message == nil {
-			// Before surfacing an error about a missing withdrawal, we need to handle an edge case
-			// for OP-Mainnet pre-regensis withdrawals that no longer exist on L2.
+			// Handle OVM 1.0 state in order to gracefully skip these withdrawals. Any network running the legacy pre-bedrock process must check for this
 			tx, err := l1Client.TxByHash(relayedMessage.Event.TransactionHash)
 			if err != nil {
 				return fmt.Errorf("unable to query legacy relayed. tx_hash = %s: %w", relayedMessage.Event.TransactionHash, err)
@@ -281,20 +280,14 @@ func LegacyL1ProcessFinalizedBridgeEvents(log log.Logger, db *database.DB, metri
 
 			relayMessageData := tx.Data()[4:]
 			inputs, err := contracts.CrossDomainMessengerLegacyRelayMessageEncoding.Inputs.Unpack(relayMessageData)
-			if err != nil || inputs == nil {
+			if err != nil || len(inputs) < 4 {
 				return fmt.Errorf("unable to extract XDomainCallData from relayMessage transaction. tx_hash = %s: %w", relayedMessage.Event.TransactionHash, err)
+			} else if inputs[3].(*big.Int).Int64() < 100_000 { // At genesis, the starting nonce was set to 100k
+				skippedOVM1Messages++
+				continue
 			}
 
-			// NOTE: Since OP-Mainnet is the only network to go through a regensis we can simply harcode the
-			// the starting message nonce at genesis (100k). Any relayed withdrawal on L1 with a lesser nonce
-			// is a clear indicator of a pre-regenesis withdrawal.
-			if inputs[3].(*big.Int).Int64() < 100_000 {
-				// skip pre-regenesis withdrawals
-				skippedPreRegenesisMessages++
-				continue
-			} else {
-				return fmt.Errorf("missing indexed L2CrossDomainMessenger message! tx_hash = %s", relayedMessage.Event.TransactionHash)
-			}
+			return fmt.Errorf("missing indexed L2CrossDomainMessager message! tx_hash %s", relayedMessage.Event.TransactionHash.String())
 		}
 
 		// Mark the associated tx withdrawal as proven/finalized with the same event. The message hash is also the transaction withdrawal hash
@@ -312,10 +305,9 @@ func LegacyL1ProcessFinalizedBridgeEvents(log log.Logger, db *database.DB, metri
 		metrics.RecordL1ProvenWithdrawals(len(crossDomainRelayedMessages))
 		metrics.RecordL1FinalizedWithdrawals(len(crossDomainRelayedMessages))
 		metrics.RecordL1CrossDomainRelayedMessages(len(crossDomainRelayedMessages))
-	}
-	if skippedPreRegenesisMessages > 0 {
-		// Logged as a warning just for visibility
-		log.Warn("skipped pre-regensis relayed L2CrossDomainMessenger withdrawals", "size", skippedPreRegenesisMessages)
+		if skippedOVM1Messages > 0 { // Logged as a warning just for visibility
+			log.Warn("skipped OVM 1.0 relayed L2CrossDomainMessenger withdrawals", "size", skippedOVM1Messages)
+		}
 	}
 
 	// (2) L1StandardBridge

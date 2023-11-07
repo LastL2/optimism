@@ -1,11 +1,15 @@
 package contracts
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/ethereum-optimism/optimism/indexer/bigint"
 	"github.com/ethereum-optimism/optimism/indexer/database"
+	"github.com/ethereum-optimism/optimism/indexer/node"
 	"github.com/ethereum-optimism/optimism/op-bindings/bindings"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/derive"
 
@@ -34,6 +38,15 @@ type OptimismPortalProvenWithdrawal struct {
 	OutputRoot    [32]byte
 	Timestamp     *big.Int
 	L2OutputIndex *big.Int
+}
+
+type OptimsimPortalWithdrawalTransaction struct {
+	Nonce    *big.Int
+	Sender   common.Address
+	Target   common.Address
+	Value    *big.Int
+	GasLimit *big.Int
+	Data     []byte
 }
 
 func OptimismPortalTransactionDepositEvents(contractAddress common.Address, db *database.DB, fromHeight, toHeight *big.Int) ([]OptimismPortalTransactionDepositEvent, error) {
@@ -145,4 +158,40 @@ func OptimismPortalWithdrawalFinalizedEvents(contractAddress common.Address, db 
 	}
 
 	return finalizedWithdrawals, nil
+}
+
+func OptimismPortalProvenWithdrawalTransaction(l1Client node.EthClient, txHash common.Hash) (*OptimsimPortalWithdrawalTransaction, error) {
+	optimismPortalAbi, err := bindings.OptimismPortalMetaData.GetAbi()
+	if err != nil {
+		return nil, err
+	}
+	methodAbi := optimismPortalAbi.Methods["proveWithdrawalTransaction"]
+
+	// Fetch Tx and Validation
+	tx, err := l1Client.TxByHash(txHash)
+	if err != nil {
+		return nil, fmt.Errorf("unable to query tx hash: %w", err)
+	} else if tx == nil {
+		return nil, fmt.Errorf("tx hash %s not found", txHash)
+	} else if len(tx.Data()) < 4 {
+		return nil, fmt.Errorf("data 0x%x for tx hash %s has insufficient calldata", tx.Data(), txHash)
+	} else if !bytes.Equal(tx.Data()[:4], methodAbi.ID) {
+		return nil, fmt.Errorf("expected proveWithdrawalTransaction function selector: 0x%x", tx.Data()[:4])
+	}
+
+	// Unpack Tx Calldata for WithdrawTx
+	inputs, err := methodAbi.Inputs.Unpack(tx.Data()[4:])
+	if err != nil || len(inputs) < 1 {
+		return nil, fmt.Errorf("unable to unpack prove withdrawal tx inputs: %w", err)
+	}
+	var wTx OptimsimPortalWithdrawalTransaction
+	data, err := json.Marshal(inputs[0])
+	if err != nil {
+		return nil, fmt.Errorf("unexpected json marshalling err: %w", err)
+	}
+	if err := json.Unmarshal(data, &wTx); err != nil {
+		return nil, fmt.Errorf("unable to convert withdrawal tx: %w", err)
+	}
+
+	return &wTx, nil
 }

@@ -75,6 +75,10 @@ func DialEthClient(ctx context.Context, rpcUrl string, metrics Metricer) (EthCli
 	return &clnt{rpc: NewRPC(rpcClient, metrics)}, nil
 }
 
+func FromRpcClient(rpc *rpc.Client, metrics Metricer) (EthClient, error) {
+	return &clnt{rpc: NewRPC(rpc, metrics)}, nil
+}
+
 // BlockHeaderByHash retrieves the block header attributed to the supplied hash
 func (c *clnt) BlockHeaderByHash(hash common.Hash) (*types.Header, error) {
 	ctxwt, cancel := context.WithTimeout(context.Background(), defaultRequestTimeout)

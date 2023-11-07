@@ -7,6 +7,8 @@ import (
 	"time"
 
 	e2etest_utils "github.com/ethereum-optimism/optimism/indexer/e2e_tests/utils"
+	"github.com/ethereum-optimism/optimism/indexer/node"
+	"github.com/ethereum-optimism/optimism/indexer/processors/contracts"
 	"github.com/ethereum-optimism/optimism/op-e2e/e2eutils/wait"
 
 	"github.com/ethereum-optimism/optimism/op-bindings/bindings"
@@ -137,6 +139,12 @@ func TestE2EBridgeTransactionsL2ToL1MessagePasserWithdrawal(t *testing.T) {
 		l1Header := testSuite.Indexer.BridgeProcessor.LastFinalizedL1Header
 		return l1Header != nil && l1Header.Number.Uint64() >= proveReceipt.BlockNumber.Uint64(), nil
 	}))
+
+	// sanity check that our on-chain withdrawal deserialization works
+	l1EthClient, _ := node.FromRpcClient(testSuite.L1Client.Client(), node.NewMetrics(testSuite.MetricsRegistry, "l1"))
+	proveWithdrawTx, err := contracts.OptimismPortalProvenWithdrawalTransaction(l1EthClient, proveReceipt.TxHash)
+	require.NoError(t, err)
+	require.Equal(t, msgPassed.Nonce.Uint64(), proveWithdrawTx.Nonce.Uint64())
 
 	withdraw, err = testSuite.DB.BridgeTransactions.L2TransactionWithdrawal(withdrawalHash)
 	require.NoError(t, err)

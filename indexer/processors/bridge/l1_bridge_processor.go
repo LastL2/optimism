@@ -7,6 +7,7 @@ import (
 	"github.com/ethereum-optimism/optimism/indexer/bigint"
 	"github.com/ethereum-optimism/optimism/indexer/config"
 	"github.com/ethereum-optimism/optimism/indexer/database"
+	"github.com/ethereum-optimism/optimism/indexer/node"
 	"github.com/ethereum-optimism/optimism/indexer/processors/contracts"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -145,7 +146,7 @@ func L1ProcessInitiatedBridgeEvents(log log.Logger, db *database.DB, metrics L1M
 //  1. OptimismPortal (Bedrock prove & finalize steps)
 //  2. L1CrossDomainMessenger (relayMessage marker)
 //  3. L1StandardBridge (no-op, since this is simply a wrapper over the L1CrossDomainMessenger)
-func L1ProcessFinalizedBridgeEvents(log log.Logger, db *database.DB, metrics L1Metricer, l1Contracts config.L1Contracts, fromHeight, toHeight *big.Int) error {
+func L1ProcessFinalizedBridgeEvents(log log.Logger, db *database.DB, metrics L1Metricer, client node.EthClient, l1Contracts config.L1Contracts, fromHeight, toHeight *big.Int) error {
 	// (1) OptimismPortal (proven withdrawals)
 	provenWithdrawals, err := contracts.OptimismPortalWithdrawalProvenEvents(l1Contracts.OptimismPortalProxy, db, fromHeight, toHeight)
 	if err != nil {
@@ -155,12 +156,25 @@ func L1ProcessFinalizedBridgeEvents(log log.Logger, db *database.DB, metrics L1M
 		log.Info("detected proven withdrawals", "size", len(provenWithdrawals))
 	}
 
+	skippedOVM1Withdrawals := 0
 	for i := range provenWithdrawals {
 		proven := provenWithdrawals[i]
 		withdrawal, err := db.BridgeTransactions.L2TransactionWithdrawal(proven.WithdrawalHash)
 		if err != nil {
 			return err
 		} else if withdrawal == nil {
+			// Handle networks with OVM 1.0 state (OP Mainnet/Goerli) in order to gracefully skip these withdrawals
+			portalAddr := l1Contracts.OptimismPortalProxy
+			if portalAddr == config.Presets[10].ChainConfig.L1Contracts.OptimismPortalProxy || portalAddr == config.Presets[420].ChainConfig.L1Contracts.OptimismPortalProxy {
+				withdrawTx, err := contracts.OptimismPortalProvenWithdrawalTransaction(client, proven.Event.TransactionHash)
+				if err != nil {
+					return fmt.Errorf("failed to detect OVM 1.0 withdrawal: %w", err)
+				} else if withdrawTx.Nonce.Int64() < 100_000 { // At genesis, the starting nonce was set to 100k
+					skippedOVM1Withdrawals++
+					continue
+				}
+			}
+
 			return fmt.Errorf("missing indexed withdrawal! tx_hash = %s", proven.Event.TransactionHash)
 		}
 
@@ -170,6 +184,9 @@ func L1ProcessFinalizedBridgeEvents(log log.Logger, db *database.DB, metrics L1M
 	}
 	if len(provenWithdrawals) > 0 {
 		metrics.RecordL1ProvenWithdrawals(len(provenWithdrawals))
+		if skippedOVM1Withdrawals > 0 { // Logged as a warning for visibility
+			log.Warn("skipped OVM 1.0 proven withdrawals", "size", skippedOVM1Withdrawals)
+		}
 	}
 
 	// (2) OptimismPortal (finalized withdrawals)
