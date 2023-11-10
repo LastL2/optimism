@@ -21,6 +21,7 @@ type L1Metricer interface {
 	RecordL1TransactionDeposits(size int, mintedETH float64)
 	RecordL1ProvenWithdrawals(size int)
 	RecordL1FinalizedWithdrawals(size int)
+	RecordL1SkippedOVM1Withdrawals(size int)
 
 	RecordL1CrossDomainSentMessages(size int)
 	RecordL1CrossDomainRelayedMessages(size int)
@@ -55,12 +56,13 @@ type bridgeMetrics struct {
 	intervalDuration *prometheus.HistogramVec
 	intervalFailures *prometheus.CounterVec
 
-	txDeposits           prometheus.Counter
-	txMintedETH          prometheus.Counter
-	txWithdrawals        prometheus.Counter
-	txWithdrawnETH       prometheus.Counter
-	provenWithdrawals    prometheus.Counter
-	finalizedWithdrawals prometheus.Counter
+	txDeposits             prometheus.Counter
+	txMintedETH            prometheus.Counter
+	txWithdrawals          prometheus.Counter
+	txWithdrawnETH         prometheus.Counter
+	skippedOVM1Withdrawals prometheus.Counter
+	provenWithdrawals      prometheus.Counter
+	finalizedWithdrawals   prometheus.Counter
 
 	sentMessages    *prometheus.CounterVec
 	relayedMessages *prometheus.CounterVec
@@ -132,6 +134,11 @@ func NewMetrics(registry *prometheus.Registry) Metricer {
 			Name:      "finalized_withdrawals",
 			Help:      "number of finalized tx withdrawals on l1",
 		}),
+		skippedOVM1Withdrawals: factory.NewCounter(prometheus.CounterOpts{
+			Namespace: MetricsNamespace,
+			Name:      "skipped_ovm1_withdrawals",
+			Help:      "number of (skipped) ovm 1.0 withdrawals on l1",
+		}),
 		sentMessages: factory.NewCounterVec(prometheus.CounterOpts{
 			Namespace: MetricsNamespace,
 			Name:      "sent_messages",
@@ -197,6 +204,10 @@ func (m *bridgeMetrics) RecordL1ProvenWithdrawals(size int) {
 
 func (m *bridgeMetrics) RecordL1FinalizedWithdrawals(size int) {
 	m.finalizedWithdrawals.Add(float64(size))
+}
+
+func (m *bridgeMetrics) RecordL1SkippedOVM1Withdrawals(size int) {
+	m.skippedOVM1Withdrawals.Add(float64(size))
 }
 
 func (m *bridgeMetrics) RecordL1CrossDomainSentMessages(size int) {

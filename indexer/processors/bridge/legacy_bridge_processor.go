@@ -306,6 +306,7 @@ func LegacyL1ProcessFinalizedBridgeEvents(log log.Logger, db *database.DB, metri
 		metrics.RecordL1FinalizedWithdrawals(len(crossDomainRelayedMessages))
 		metrics.RecordL1CrossDomainRelayedMessages(len(crossDomainRelayedMessages))
 		if skippedOVM1Messages > 0 { // Logged as a warning just for visibility
+			metrics.RecordL1SkippedOVM1Withdrawals(skippedOVM1Messages)
 			log.Warn("skipped OVM 1.0 relayed L2CrossDomainMessenger withdrawals", "size", skippedOVM1Messages)
 		}
 	}
