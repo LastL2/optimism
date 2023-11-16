@@ -2,12 +2,22 @@
 
 rm -rf artifacts forge-artifacts
 
+set -e
+
+if ! command -v slither &> /dev/null
+then
+    echo "slither could not be found. Please install slither by running:"
+    echo "pip3 install slither-analyzer"
+    exit
+fi
+
+dir=$(dirname "$0")
+
 # See slither.config.json for slither settings
 if [[ -z "$TRIAGE_MODE" ]]; then
-  echo "Building contracts"
-  forge build --build-info --force
-  echo "Running slither"
-  slither --ignore-compile .
+  echo "Running slither in normal mode"
+  slither . --checklist --filter-paths "./lib|./test" --exclude naming-convention,solc-version
+  echo "Slither report stored at $dir/../slither-report.md"
 else
   echo "Running slither in triage mode"
   # Slither's triage mode will run an 'interview' in the terminal, allowing you to review each of

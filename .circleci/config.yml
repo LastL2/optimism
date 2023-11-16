@@ -389,7 +389,7 @@ jobs:
           working_directory: packages/contracts-bedrock
       - run:
           name: run slither
-          command: slither . --filter-paths "./lib|./test" --exclude naming-convention,solc-version
+          command: pnpm slither
           working_directory: packages/contracts-bedrock
           no_output_timeout: 15m
 
