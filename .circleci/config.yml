@@ -375,6 +375,24 @@ jobs:
           working_directory: packages/contracts-bedrock
           no_output_timeout: 15m
 
+  contracts-bedrock-static-analysis:
+    docker:
+      - image: <<pipeline.parameters.ci_builder_image>>
+    resource_class: xlarge
+    steps:
+      - checkout
+      - check-changed:
+          patterns: contracts-bedrock,op-node
+      - run:
+          name: print slither version
+          command: slither --version
+          working_directory: packages/contracts-bedrock
+      - run:
+          name: run slither
+          command: slither . --filter-paths "./lib|./test" --exclude naming-convention,solc-version
+          working_directory: packages/contracts-bedrock
+          no_output_timeout: 15m
+
   contracts-bedrock-checks:
     docker:
       - image: <<pipeline.parameters.ci_builder_image>>
@@ -1317,6 +1335,7 @@ workflows:
           requires:
             - pnpm-monorepo
       - contracts-bedrock-coverage
+      - contracts-bedrock-static-analysis
       - contracts-bedrock-checks:
           requires:
             - pnpm-monorepo
