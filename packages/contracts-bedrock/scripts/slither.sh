@@ -16,7 +16,7 @@ dir=$(dirname "$0")
 # See slither.config.json for slither settings
 if [[ -z "$TRIAGE_MODE" ]]; then
   echo "Running slither in normal mode"
-  slither . --checklist --filter-paths "./lib|./test" --exclude naming-convention,solc-version
+  slither . --checklist --filter-paths "./lib|./test" --exclude naming-convention,solc-version --json slither-report.md
   echo "Slither report stored at $dir/../slither-report.md"
 else
   echo "Running slither in triage mode"
