@@ -28,6 +28,7 @@ import { L1StandardBridge } from "src/L1/L1StandardBridge.sol";
 import { AddressManager } from "src/legacy/AddressManager.sol";
 import { L1ERC721Bridge } from "src/L1/L1ERC721Bridge.sol";
 import { AddressAliasHelper } from "src/vendor/AddressAliasHelper.sol";
+import { SuperchainConfig } from "src/L1/SuperchainConfig.sol";
 
 /// @title Setup
 /// @dev This contact is responsible for setting up the contracts in state. It currently
@@ -44,6 +45,7 @@ contract Setup is Deploy {
     L1ERC721Bridge l1ERC721Bridge;
     OptimismMintableERC20Factory l1OptimismMintableERC20Factory;
     ProtocolVersions protocolVersions;
+    SuperchainConfig superchainConfig;
 
     L2CrossDomainMessenger l2CrossDomainMessenger =
         L2CrossDomainMessenger(payable(Predeploys.L2_CROSS_DOMAIN_MESSENGER));
@@ -85,6 +87,7 @@ contract Setup is Deploy {
         l1OptimismMintableERC20Factory =
             OptimismMintableERC20Factory(mustGetAddress("OptimismMintableERC20FactoryProxy"));
         protocolVersions = ProtocolVersions(mustGetAddress("ProtocolVersionsProxy"));
+        superchainConfig = SuperchainConfig(mustGetAddress("SuperchainConfigProxy"));
 
         vm.label(address(l2OutputOracle), "L2OutputOracle");
         vm.label(mustGetAddress("L2OutputOracleProxy"), "L2OutputOracleProxy");
@@ -103,6 +106,8 @@ contract Setup is Deploy {
         vm.label(mustGetAddress("OptimismMintableERC20FactoryProxy"), "OptimismMintableERC20FactoryProxy");
         vm.label(address(protocolVersions), "ProtocolVersions");
         vm.label(mustGetAddress("ProtocolVersionsProxy"), "ProtocolVersionsProxy");
+        vm.label(address(superchainConfig), "SuperchainConfig");
+        vm.label(mustGetAddress("SuperchainConfigProxy"), "SuperchainConfigProxy");
         vm.label(AddressAliasHelper.applyL1ToL2Alias(address(l1CrossDomainMessenger)), "L1CrossDomainMessenger_aliased");
     }
 
