@@ -4,17 +4,211 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sync"
+	"time"
 
+	"github.com/ethereum-optimism/optimism/op-service/client"
 	"github.com/ethereum-optimism/optimism/op-service/sources/batching"
+	"github.com/ethereum-optimism/optimism/op-service/sources/caching"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/trie"
 
 	"github.com/ethereum-optimism/optimism/op-service/eth"
 )
+
+type ReceiptsProvider interface {
+	// FetchReceipts returns a block info and all of the receipts associated with transactions in the block.
+	// It verifies the receipt hash in the block header against the receipt hash of the fetched receipts
+	// to ensure that the execution engine did not fail to return any receipts.
+	FetchReceipts(ctx context.Context, block eth.BlockID, txHashes []common.Hash) (types.Receipts, error)
+}
+
+type CachingReceiptsProvider struct {
+	inner ReceiptsProvider
+	cache *caching.LRUCache[common.Hash, types.Receipts]
+}
+
+func NewCachingReceiptsProvider(inner ReceiptsProvider, m caching.Metrics, cacheSize int) *CachingReceiptsProvider {
+	return &CachingReceiptsProvider{
+		inner: inner,
+		cache: caching.NewLRUCache[common.Hash, types.Receipts](m, "receipts", cacheSize),
+	}
+}
+
+func (p *CachingReceiptsProvider) FetchReceipts(ctx context.Context, block eth.BlockID, txHashes []common.Hash) (types.Receipts, error) {
+	if r, ok := p.cache.Get(block.Hash); ok {
+		return r, nil
+	}
+
+	r, err := p.inner.FetchReceipts(ctx, block, txHashes)
+	if err != nil {
+		return nil, err
+	}
+
+	p.cache.Add(block.Hash, r)
+	return r, nil
+}
+
+// CachedReceipts provides direct access to the underlying receipts cache.
+// It returns the receipts and true for a cache hit, and nil, false otherwise.
+func (p *CachingReceiptsProvider) CachedReceipts(blockHash common.Hash) (types.Receipts, bool) {
+	return p.cache.Get(blockHash)
+}
+
+func newRPCRecProviderFromConfig(client client.RPC, log log.Logger, metrics caching.Metrics, config *EthClientConfig) *CachingReceiptsProvider {
+	recCfg := RPCReceiptsConfig{
+		MaxBatchSize:        config.MaxRequestsPerBatch,
+		ProviderKind:        config.RPCProviderKind,
+		MethodResetDuration: config.MethodResetDuration,
+	}
+	return NewCachingRPCReceiptsProvider(client, log, recCfg, metrics, config.ReceiptsCacheSize)
+}
+
+type rpcClient interface {
+	CallContext(ctx context.Context, result any, method string, args ...any) error
+	BatchCallContext(ctx context.Context, b []rpc.BatchElem) error
+}
+
+type BasicRPCReceiptsFetcher struct {
+	client       rpcClient
+	maxBatchSize int
+}
+
+func (f *BasicRPCReceiptsFetcher) FetchReceipts(ctx context.Context, block eth.BlockID, txHashes []common.Hash) (types.Receipts, error) {
+	fetcher := batching.NewIterativeBatchCall[common.Hash, *types.Receipt](
+		txHashes,
+		makeReceiptRequest,
+		f.client.BatchCallContext,
+		f.client.CallContext,
+		f.maxBatchSize,
+	)
+	// Fetch all receipts
+	for {
+		if err := fetcher.Fetch(ctx); err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+	}
+	return fetcher.Result()
+}
+
+type RPCReceiptsFetcher struct {
+	client rpcClient
+	basic  BasicRPCReceiptsFetcher
+
+	log log.Logger
+
+	provKind RPCProviderKind
+
+	// availableReceiptMethods tracks which receipt methods can be used for fetching receipts
+	// This may be modified concurrently, but we don't lock since it's a single
+	// uint64 that's not critical (fine to miss or mix up a modification)
+	availableReceiptMethods ReceiptsFetchingMethod
+
+	// lastMethodsReset tracks when availableReceiptMethods was last reset.
+	// When receipt-fetching fails it falls back to available methods,
+	// but periodically it will try to reset to the preferred optimal methods.
+	lastMethodsReset time.Time
+
+	// methodResetDuration defines how long we take till we reset lastMethodsReset
+	methodResetDuration time.Duration
+}
+
+type RPCReceiptsConfig struct {
+	MaxBatchSize        int
+	ProviderKind        RPCProviderKind
+	MethodResetDuration time.Duration
+}
+
+func NewRPCReceiptsFetcher(client rpcClient, log log.Logger, config RPCReceiptsConfig) *RPCReceiptsFetcher {
+	return &RPCReceiptsFetcher{
+		client: client,
+		basic: BasicRPCReceiptsFetcher{
+			client:       client,
+			maxBatchSize: config.MaxBatchSize,
+		},
+		log:                     log,
+		provKind:                config.ProviderKind,
+		availableReceiptMethods: AvailableReceiptsFetchingMethods(config.ProviderKind),
+		lastMethodsReset:        time.Now(),
+		methodResetDuration:     config.MethodResetDuration,
+	}
+}
+
+func NewCachingRPCReceiptsProvider(client rpcClient, log log.Logger, config RPCReceiptsConfig, m caching.Metrics, cacheSize int) *CachingReceiptsProvider {
+	return NewCachingReceiptsProvider(NewRPCReceiptsFetcher(client, log, config), m, cacheSize)
+}
+
+func (f *RPCReceiptsFetcher) FetchReceipts(ctx context.Context, block eth.BlockID, txHashes []common.Hash) (result types.Receipts, err error) {
+	m := f.PickReceiptsMethod(len(txHashes))
+	switch m {
+	case EthGetTransactionReceiptBatch:
+		result, err = f.basic.FetchReceipts(ctx, block, txHashes)
+	case AlchemyGetTransactionReceipts:
+		var tmp receiptsWrapper
+		err = f.client.CallContext(ctx, &tmp, "alchemy_getTransactionReceipts", blockHashParameter{BlockHash: block.Hash})
+		result = tmp.Receipts
+	case DebugGetRawReceipts:
+		var rawReceipts []hexutil.Bytes
+		err = f.client.CallContext(ctx, &rawReceipts, "debug_getRawReceipts", block.Hash)
+		if err == nil {
+			if len(rawReceipts) == len(txHashes) {
+				result, err = eth.DecodeRawReceipts(block, rawReceipts, txHashes)
+			} else {
+				err = fmt.Errorf("got %d raw receipts, but expected %d", len(rawReceipts), len(txHashes))
+			}
+		}
+	case ParityGetBlockReceipts:
+		err = f.client.CallContext(ctx, &result, "parity_getBlockReceipts", block.Hash)
+	case EthGetBlockReceipts:
+		err = f.client.CallContext(ctx, &result, "eth_getBlockReceipts", block.Hash)
+	case ErigonGetBlockReceiptsByBlockHash:
+		err = f.client.CallContext(ctx, &result, "erigon_getBlockReceiptsByBlockHash", block.Hash)
+	default:
+		err = fmt.Errorf("unknown receipt fetching method: %d", uint64(m))
+	}
+
+	if err != nil {
+		f.OnReceiptsMethodErr(m, err)
+		return nil, err
+	}
+
+	return
+}
+
+// receiptsWrapper is a decoding type util. Alchemy in particular wraps the receipts array result.
+type receiptsWrapper struct {
+	Receipts []*types.Receipt `json:"receipts"`
+}
+
+func (f *RPCReceiptsFetcher) PickReceiptsMethod(txCount int) ReceiptsFetchingMethod {
+	txc := uint64(txCount)
+	if now := time.Now(); now.Sub(f.lastMethodsReset) > f.methodResetDuration {
+		m := AvailableReceiptsFetchingMethods(f.provKind)
+		if f.availableReceiptMethods != m {
+			f.log.Warn("resetting back RPC preferences, please review RPC provider kind setting", "kind", f.provKind.String())
+		}
+		f.availableReceiptMethods = m
+		f.lastMethodsReset = now
+	}
+	return PickBestReceiptsFetchingMethod(f.provKind, f.availableReceiptMethods, txc)
+}
+
+func (f *RPCReceiptsFetcher) OnReceiptsMethodErr(m ReceiptsFetchingMethod, err error) {
+	if unusableMethod(err) {
+		// clear the bit of the method that errored
+		f.availableReceiptMethods &^= m
+		f.log.Warn("failed to use selected RPC method for receipt fetching, temporarily falling back to alternatives",
+			"provider_kind", f.provKind, "failed_method", m, "fallback", f.availableReceiptMethods, "err", err)
+	} else {
+		f.log.Debug("failed to use selected RPC method for receipt fetching, but method does appear to be available, so we continue to use it",
+			"provider_kind", f.provKind, "failed_method", m, "fallback", f.availableReceiptMethods&^m, "err", err)
+	}
+}
 
 // validateReceipts validates that the receipt contents are valid.
 // Warning: contractAddress is not verified, since it is a more expensive operation for data we do not use.
@@ -125,7 +319,6 @@ const (
 	RPCKindBasic      RPCProviderKind = "basic"    // try only the standard most basic receipt fetching
 	RPCKindAny        RPCProviderKind = "any"      // try any method available
 	RPCKindStandard   RPCProviderKind = "standard" // try standard methods, including newer optimized standard RPC methods
-	RPCKindRethDB     RPCProviderKind = "reth_db"  // read data directly from reth's database
 )
 
 var RPCProviderKinds = []RPCProviderKind{
@@ -140,11 +333,6 @@ var RPCProviderKinds = []RPCProviderKind{
 	RPCKindAny,
 	RPCKindStandard,
 }
-
-// Copy of RPCProviderKinds with RethDB added to all RethDB to be used but to hide it from the flags
-var validRPCProviderKinds = func() []RPCProviderKind {
-	return append(RPCProviderKinds, RPCKindRethDB)
-}()
 
 func (kind RPCProviderKind) String() string {
 	return string(kind)
@@ -164,7 +352,7 @@ func (kind *RPCProviderKind) Clone() any {
 }
 
 func ValidRPCProviderKind(value RPCProviderKind) bool {
-	for _, k := range validRPCProviderKinds {
+	for _, k := range RPCProviderKinds {
 		if k == value {
 			return true
 		}
@@ -275,18 +463,6 @@ const (
 	// See:
 	// https://github.com/ledgerwatch/erigon/blob/287a3d1d6c90fc6a7a088b5ae320f93600d5a167/cmd/rpcdaemon/commands/erigon_receipts.go#LL391C24-L391C51
 	ErigonGetBlockReceiptsByBlockHash
-	// RethGetBlockReceiptsMDBX is a Reth-specific receipt fetching method. It reads the data directly from reth's database, using their
-	// generic DB abstractions, rather than requesting it from the RPC provider.
-	// Available in:
-	//   - Reth
-	// Method: n/a - does not use RPC.
-	// Params:
-	//   - Reth: string, hex-encoded block hash
-	// Returns:
-	//   - Reth: string, json-ified receipts
-	// See:
-	//   - reth's DB crate documentation: https://github.com/paradigmxyz/reth/blob/main/docs/crates/db.md
-	RethGetBlockReceipts
 
 	// Other:
 	//  - 250 credits, not supported, strictly worse than other options. In quicknode price-table.
@@ -316,14 +492,12 @@ func AvailableReceiptsFetchingMethods(kind RPCProviderKind) ReceiptsFetchingMeth
 	case RPCKindBasic:
 		return EthGetTransactionReceiptBatch
 	case RPCKindAny:
-		// if it's any kind of RPC provider, then try all methods (except for RethGetBlockReceipts)
+		// if it's any kind of RPC provider, then try all methods
 		return AlchemyGetTransactionReceipts | EthGetBlockReceipts |
 			DebugGetRawReceipts | ErigonGetBlockReceiptsByBlockHash |
 			ParityGetBlockReceipts | EthGetTransactionReceiptBatch
 	case RPCKindStandard:
 		return EthGetBlockReceipts | EthGetTransactionReceiptBatch
-	case RPCKindRethDB:
-		return RethGetBlockReceipts
 	default:
 		return EthGetTransactionReceiptBatch
 	}
@@ -334,9 +508,7 @@ func AvailableReceiptsFetchingMethods(kind RPCProviderKind) ReceiptsFetchingMeth
 func PickBestReceiptsFetchingMethod(kind RPCProviderKind, available ReceiptsFetchingMethod, txCount uint64) ReceiptsFetchingMethod {
 	// If we have optimized methods available, it makes sense to use them, but only if the cost is
 	// lower than fetching transactions one by one with the standard receipts RPC method.
-	if kind == RPCKindRethDB {
-		return RethGetBlockReceipts
-	} else if kind == RPCKindAlchemy {
+	if kind == RPCKindAlchemy {
 		if available&AlchemyGetTransactionReceipts != 0 && txCount > 250/15 {
 			return AlchemyGetTransactionReceipts
 		}
@@ -371,170 +543,4 @@ func PickBestReceiptsFetchingMethod(kind RPCProviderKind, available ReceiptsFetc
 	}
 	// otherwise fall back on per-tx fetching
 	return EthGetTransactionReceiptBatch
-}
-
-type rpcClient interface {
-	CallContext(ctx context.Context, result any, method string, args ...any) error
-	BatchCallContext(ctx context.Context, b []rpc.BatchElem) error
-}
-
-// receiptsFetchingJob runs the receipt fetching for a specific block,
-// and can re-run and adapt based on the fetching method preferences and errors communicated with the requester.
-type receiptsFetchingJob struct {
-	m sync.Mutex
-
-	requester ReceiptsRequester
-
-	client       rpcClient
-	maxBatchSize int
-
-	block       eth.BlockID
-	receiptHash common.Hash
-	txHashes    []common.Hash
-
-	fetcher *batching.IterativeBatchCall[common.Hash, *types.Receipt]
-
-	// [OPTIONAL] RethDB path to fetch receipts from
-	rethDbPath string
-
-	result types.Receipts
-}
-
-func NewReceiptsFetchingJob(requester ReceiptsRequester, client rpcClient, maxBatchSize int, block eth.BlockID,
-	receiptHash common.Hash, txHashes []common.Hash, rethDb string) *receiptsFetchingJob {
-	return &receiptsFetchingJob{
-		requester:    requester,
-		client:       client,
-		maxBatchSize: maxBatchSize,
-		block:        block,
-		receiptHash:  receiptHash,
-		txHashes:     txHashes,
-		rethDbPath:   rethDb,
-	}
-}
-
-// ReceiptsRequester helps determine which receipts fetching method can be used,
-// and is given feedback upon receipt fetching errors to adapt the choice of method.
-type ReceiptsRequester interface {
-	PickReceiptsMethod(txCount uint64) ReceiptsFetchingMethod
-	OnReceiptsMethodErr(m ReceiptsFetchingMethod, err error)
-}
-
-// runFetcher retrieves the result by continuing previous batched receipt fetching work,
-// and starting this work if necessary.
-func (job *receiptsFetchingJob) runFetcher(ctx context.Context) error {
-	if job.fetcher == nil {
-		// start new work
-		job.fetcher = batching.NewIterativeBatchCall[common.Hash, *types.Receipt](
-			job.txHashes,
-			makeReceiptRequest,
-			job.client.BatchCallContext,
-			job.client.CallContext,
-			job.maxBatchSize,
-		)
-	}
-	// Fetch all receipts
-	for {
-		if err := job.fetcher.Fetch(ctx); err == io.EOF {
-			break
-		} else if err != nil {
-			return err
-		}
-	}
-	result, err := job.fetcher.Result()
-	if err != nil { // errors if results are not available yet, should never happen.
-		return err
-	}
-	if err := validateReceipts(job.block, job.receiptHash, job.txHashes, result); err != nil {
-		job.fetcher.Reset() // if results are fetched but invalid, try restart all the fetching to try and get valid data.
-		return err
-	}
-	// Remember the result, and don't keep the fetcher and tx hashes around for longer than needed
-	job.result = result
-	job.fetcher = nil
-	job.txHashes = nil
-	return nil
-}
-
-// receiptsWrapper is a decoding type util. Alchemy in particular wraps the receipts array result.
-type receiptsWrapper struct {
-	Receipts []*types.Receipt `json:"receipts"`
-}
-
-// runAltMethod retrieves the result by fetching all receipts at once,
-// using the given non-standard receipt fetching method.
-func (job *receiptsFetchingJob) runAltMethod(ctx context.Context, m ReceiptsFetchingMethod) error {
-	var result []*types.Receipt
-	var err error
-	switch m {
-	case AlchemyGetTransactionReceipts:
-		var tmp receiptsWrapper
-		err = job.client.CallContext(ctx, &tmp, "alchemy_getTransactionReceipts", blockHashParameter{BlockHash: job.block.Hash})
-		result = tmp.Receipts
-	case DebugGetRawReceipts:
-		var rawReceipts []hexutil.Bytes
-		err = job.client.CallContext(ctx, &rawReceipts, "debug_getRawReceipts", job.block.Hash)
-		if err == nil {
-			if len(rawReceipts) == len(job.txHashes) {
-				result, err = eth.DecodeRawReceipts(job.block, rawReceipts, job.txHashes)
-			} else {
-				err = fmt.Errorf("got %d raw receipts, but expected %d", len(rawReceipts), len(job.txHashes))
-			}
-		}
-	case ParityGetBlockReceipts:
-		err = job.client.CallContext(ctx, &result, "parity_getBlockReceipts", job.block.Hash)
-	case EthGetBlockReceipts:
-		err = job.client.CallContext(ctx, &result, "eth_getBlockReceipts", job.block.Hash)
-	case ErigonGetBlockReceiptsByBlockHash:
-		err = job.client.CallContext(ctx, &result, "erigon_getBlockReceiptsByBlockHash", job.block.Hash)
-	case RethGetBlockReceipts:
-		if job.rethDbPath == "" {
-			return fmt.Errorf("reth_db path not set")
-		}
-		res, err := FetchRethReceipts(job.rethDbPath, &job.block.Hash)
-		if err != nil {
-			return err
-		}
-		result = res
-	default:
-		err = fmt.Errorf("unknown receipt fetching method: %d", uint64(m))
-	}
-	if err != nil {
-		job.requester.OnReceiptsMethodErr(m, err)
-		return err
-	} else {
-		if err := validateReceipts(job.block, job.receiptHash, job.txHashes, result); err != nil {
-			return err
-		}
-		job.result = result
-		return nil
-	}
-}
-
-// Fetch makes the job fetch the receipts, and returns the results, if any.
-// An error may be returned if the fetching is not successfully completed,
-// and fetching may be continued/re-attempted by calling Fetch again.
-// The job caches the result, so repeated Fetches add no additional cost.
-// Fetch is safe to be called concurrently, and will lock to avoid duplicate work or internal inconsistency.
-func (job *receiptsFetchingJob) Fetch(ctx context.Context) (types.Receipts, error) {
-	job.m.Lock()
-	defer job.m.Unlock()
-
-	if job.result != nil {
-		return job.result, nil
-	}
-
-	m := job.requester.PickReceiptsMethod(uint64(len(job.txHashes)))
-
-	if m == EthGetTransactionReceiptBatch {
-		if err := job.runFetcher(ctx); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := job.runAltMethod(ctx, m); err != nil {
-			return nil, err
-		}
-	}
-
-	return job.result, nil
 }
