@@ -9,6 +9,7 @@ import { Constants } from "src/libraries/Constants.sol";
 import { L1StandardBridge } from "src/L1/L1StandardBridge.sol";
 import { L2OutputOracle } from "src/L1/L2OutputOracle.sol";
 import { ProtocolVersion, ProtocolVersions } from "src/L1/ProtocolVersions.sol";
+import { SuperchainConfig } from "src/L1/SuperchainConfig.sol";
 import { OptimismPortal } from "src/L1/OptimismPortal.sol";
 import { L1CrossDomainMessenger } from "src/L1/L1CrossDomainMessenger.sol";
 import { OptimismMintableERC20Factory } from "src/universal/OptimismMintableERC20Factory.sol";
@@ -145,5 +146,12 @@ library ChainAssertions {
         require(versions.owner() == cfg.finalSystemOwner());
         require(ProtocolVersion.unwrap(versions.required()) == cfg.requiredProtocolVersion());
         require(ProtocolVersion.unwrap(versions.recommended()) == cfg.recommendedProtocolVersion());
+    }
+
+    /// @notice Asserts that the SuperchainConfig is setup correctly
+    function checkSuperchainConfig(Types.ContractSet memory _proxies, DeployConfig _cfg) internal view {
+        SuperchainConfig superchainConfig = SuperchainConfig(_proxies.SuperchainConfig);
+        require(superchainConfig.guardian() == _cfg.portalGuardian());
+        require(superchainConfig.paused() == false);
     }
 }

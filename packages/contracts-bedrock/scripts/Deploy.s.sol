@@ -112,7 +112,8 @@ contract Deploy is Deployer {
             OptimismPortal: getAddress("OptimismPortalProxy"),
             SystemConfig: getAddress("SystemConfigProxy"),
             L1ERC721Bridge: getAddress("L1ERC721BridgeProxy"),
-            ProtocolVersions: getAddress("ProtocolVersionsProxy")
+            ProtocolVersions: getAddress("ProtocolVersionsProxy"),
+            SuperchainConfig: getAddress("SuperchainConfigProxy")
         });
     }
 
@@ -225,6 +226,7 @@ contract Deploy is Deployer {
         deploySuperchainConfig();
         initializeSuperchainConfig();
 
+        // Deploy the ProtocolVersionsProxy
         deployERC1967Proxy("ProtocolVersionsProxy");
         deployProtocolVersions();
         initializeProtocolVersions();
@@ -659,12 +661,10 @@ contract Deploy is Deployer {
         _upgradeAndCallViaSafe({
             _proxy: superchainConfigProxy,
             _implementation: superchainConfig,
-            _innerCallData: abi.encodeCall( // reverts in call to initialize
-                    // SuperchainConfig.initialize, (mustGetAddress("SystemOwner"), cfg.superchainConfigGuardian(),)
-                    SuperchainConfig.initialize,
-                    (cfg.portalGuardian())
-                )
+            _innerCallData: abi.encodeCall(SuperchainConfig.initialize, (cfg.portalGuardian()))
         });
+
+        ChainAssertions.checkSuperchainConfig(_proxies(), cfg);
     }
 
     /// @notice Initialize the DisputeGameFactory
