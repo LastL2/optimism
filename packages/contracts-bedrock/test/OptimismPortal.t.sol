@@ -21,9 +21,6 @@ import { SystemConfig } from "src/L1/SystemConfig.sol";
 import { OptimismPortal } from "src/L1/OptimismPortal.sol";
 
 contract OptimismPortal_Test is CommonTest {
-    event Paused(address);
-    event Unpaused(address);
-
     address depositor;
 
     function setUp() public override {
@@ -49,11 +46,11 @@ contract OptimismPortal_Test is CommonTest {
 
         assertEq(optimismPortal.paused(), false);
 
-        vm.expectEmit(address(optimismPortal));
-        emit Paused(guardian);
+        vm.expectEmit(address(superchainConfig));
+        emit Paused("identifier");
 
         vm.prank(guardian);
-        optimismPortal.pause();
+        superchainConfig.pause("identifier");
 
         assertEq(optimismPortal.paused(), true);
     }
@@ -63,9 +60,9 @@ contract OptimismPortal_Test is CommonTest {
         assertEq(optimismPortal.paused(), false);
 
         assertTrue(optimismPortal.GUARDIAN() != alice);
-        vm.expectRevert("OptimismPortal: only guardian can pause");
+        vm.expectRevert("SuperchainConfig: only guardian can pause");
         vm.prank(alice);
-        optimismPortal.pause();
+        superchainConfig.pause("identifier");
 
         assertEq(optimismPortal.paused(), false);
     }
@@ -76,13 +73,13 @@ contract OptimismPortal_Test is CommonTest {
         address guardian = optimismPortal.GUARDIAN();
 
         vm.prank(guardian);
-        optimismPortal.pause();
+        superchainConfig.pause("identifier");
         assertEq(optimismPortal.paused(), true);
 
-        vm.expectEmit(address(optimismPortal));
-        emit Unpaused(guardian);
+        vm.expectEmit(address(superchainConfig));
+        emit Unpaused();
         vm.prank(guardian);
-        optimismPortal.unpause();
+        superchainConfig.unpause();
 
         assertEq(optimismPortal.paused(), false);
     }
@@ -92,13 +89,13 @@ contract OptimismPortal_Test is CommonTest {
         address guardian = optimismPortal.GUARDIAN();
 
         vm.prank(guardian);
-        optimismPortal.pause();
+        superchainConfig.pause("identifier");
         assertEq(optimismPortal.paused(), true);
 
         assertTrue(optimismPortal.GUARDIAN() != alice);
-        vm.expectRevert("OptimismPortal: only guardian can unpause");
+        vm.expectRevert("SuperchainConfig: only guardian can unpause");
         vm.prank(alice);
-        optimismPortal.unpause();
+        superchainConfig.unpause();
 
         assertEq(optimismPortal.paused(), true);
     }
@@ -383,7 +380,7 @@ contract OptimismPortal_FinalizeWithdrawal_Test is CommonTest {
     /// @dev Tests that `proveWithdrawalTransaction` reverts when paused.
     function test_proveWithdrawalTransaction_paused_reverts() external {
         vm.prank(optimismPortal.GUARDIAN());
-        optimismPortal.pause();
+        superchainConfig.pause("identifier");
 
         vm.expectRevert("OptimismPortal: paused");
         optimismPortal.proveWithdrawalTransaction({
@@ -535,7 +532,7 @@ contract OptimismPortal_FinalizeWithdrawal_Test is CommonTest {
     /// @dev Tests that `finalizeWithdrawalTransaction` reverts if the contract is paused.
     function test_finalizeWithdrawalTransaction_paused_reverts() external {
         vm.prank(optimismPortal.GUARDIAN());
-        optimismPortal.pause();
+        superchainConfig.pause("identifier");
 
         vm.expectRevert("OptimismPortal: paused");
         optimismPortal.finalizeWithdrawalTransaction(_defaultTx);

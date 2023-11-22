@@ -137,6 +137,7 @@ library ChainAssertions {
         require(portal.guardian() == cfg.portalGuardian());
         require(address(portal.SYSTEM_CONFIG()) == proxies.SystemConfig);
         require(address(portal.systemConfig()) == proxies.SystemConfig);
+        require(address(portal.superchainConfig()) == address(proxies.SuperchainConfig));
         require(portal.paused() == false);
     }
 

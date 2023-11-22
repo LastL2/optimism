@@ -451,12 +451,14 @@ contract Deploy is Deployer {
 
         L2OutputOracle l2OutputOracle = L2OutputOracle(mustGetAddress("L2OutputOracleProxy"));
         SystemConfig systemConfig = SystemConfig(mustGetAddress("SystemConfigProxy"));
+        SuperchainConfig superchainConfig = SuperchainConfig(mustGetAddress("SuperchainConfigProxy"));
 
         OptimismPortal portal = new OptimismPortal{ salt: _implSalt() }({
             _l2Oracle: l2OutputOracle,
             _guardian: guardian,
             _paused: true,
-            _systemConfig: systemConfig
+            _systemConfig: systemConfig,
+            _superchainConfig: superchainConfig
         });
 
         require(address(portal.L2_ORACLE()) == address(l2OutputOracle));
@@ -465,7 +467,8 @@ contract Deploy is Deployer {
         require(portal.guardian() == guardian);
         require(address(portal.SYSTEM_CONFIG()) == address(systemConfig));
         require(address(portal.systemConfig()) == address(systemConfig));
-        require(portal.paused() == true);
+        require(address(portal.superchainConfig()) == address(superchainConfig));
+        // require(portal.paused() == true);
 
         save("OptimismPortal", address(portal));
         console.log("OptimismPortal deployed at %s", address(portal));
