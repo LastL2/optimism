@@ -100,6 +100,9 @@ func entrypoint(ctx *cli.Context) error {
 
 	// Check that all of the defined predeploys are set up correctly
 	for name, addr := range predeploys.Predeploys {
+		if name == "CrossL2Inbox" { // experimental, only there in interop chains
+			continue
+		}
 		log.Info("Checking predeploy", "name", name, "address", addr.Hex())
 		if err := checkPredeployConfig(clients.L2Client, name); err != nil {
 			return err

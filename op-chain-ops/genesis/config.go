@@ -218,6 +218,9 @@ type DeployConfig struct {
 
 	// When Cancun activates. Relative to L1 genesis.
 	L1CancunTimeOffset *uint64 `json:"l1CancunTimeOffset,omitempty"`
+
+	// SuperchainPostie is the address with CrossL2Inbox access, for interop prototype.
+	SuperchainPostie *common.Address `json:"superchainPostie,omitempty"`
 }
 
 // Copy will deeply copy the DeployConfig. This does a JSON roundtrip to copy
@@ -722,6 +725,14 @@ func NewL2ImmutableConfig(config *DeployConfig, block *types.Block) (immutables.
 	}
 	immutable["OptimismMintableERC20Factory"] = immutables.ImmutableValues{
 		"bridge": predeploys.L2StandardBridgeAddr,
+	}
+	if interopTime := config.InteropTime(block.Time()); interopTime != nil && *interopTime <= block.Time() {
+		if config.SuperchainPostie == nil {
+			return nil, fmt.Errorf("missing superchain postie address, but activated interop at %d", interopTime)
+		}
+		immutable["CrossL2Inbox"] = immutables.ImmutableValues{
+			"superchainPostie": *config.SuperchainPostie,
+		}
 	}
 	return immutable, nil
 }

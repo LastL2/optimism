@@ -56,6 +56,10 @@ func BuildL2Genesis(config *DeployConfig, l1StartBlock *types.Block) (*core.Gene
 			log.Warn("Governance is not enabled, skipping governance token predeploy.")
 			continue
 		}
+		if addr == predeploys.CrossL2InboxAddr && !genspec.Config.IsInterop(l1StartBlock.Time()) {
+			log.Warn("Interop is not active, skipping CrossL2Inbox predeploy.")
+			continue
+		}
 		codeAddr := addr
 		if predeploys.IsProxied(addr) {
 			codeAddr, err = AddressToCodeNamespace(addr)

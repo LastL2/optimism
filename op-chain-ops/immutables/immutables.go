@@ -152,6 +152,14 @@ func BuildOptimism(immutable ImmutableConfig) (DeploymentResults, error) {
 			Name: "SchemaRegistry",
 		},
 	}
+	if crossL2Inbox, ok := immutable["CrossL2Inbox"]; ok {
+		deployments = append(deployments, deployer.Constructor{
+			Name: "CrossL2Inbox",
+			Args: []interface{}{
+				crossL2Inbox["superchainPostie"],
+			},
+		})
+	}
 	return BuildL2(deployments)
 }
 
@@ -250,6 +258,12 @@ func l2Deployer(backend *backends.SimulatedBackend, opts *bind.TransactOpts, dep
 		_, tx, _, err = bindings.DeployEAS(opts, backend)
 	case "SchemaRegistry":
 		_, tx, _, err = bindings.DeploySchemaRegistry(opts, backend)
+	case "CrossL2Inbox":
+		superchainPostie, ok := deployment.Args[0].(common.Address)
+		if !ok {
+			return nil, fmt.Errorf("invalid type for superchain postie address")
+		}
+		_, tx, _, err = bindings.DeployCrossL2Inbox(opts, backend, superchainPostie)
 	default:
 		return tx, fmt.Errorf("unknown contract: %s", deployment.Name)
 	}
