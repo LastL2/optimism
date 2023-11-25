@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"text/template"
 
 	"github.com/ethereum-optimism/optimism/op-bindings/etherscan"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 type contractData struct {
@@ -24,6 +26,9 @@ func (generator *bindGenGeneratorRemote) standardHandler(contractMetadata *remot
 	}
 
 	contractMetadata.DeployedBin = fetchedData.deployedBin
+	if err = generator.compareDeployedBytecodeWithRpcs(contractMetadata); err != nil {
+		return err
+	}
 
 	// If ABI was explicitly provided by config, don't overwrite
 	if contractMetadata.Abi == "" {
@@ -57,6 +62,9 @@ func (generator *bindGenGeneratorRemote) multiSendHandler(contractMetadata *remo
 
 	contractMetadata.Abi = fetchedData.abi
 	contractMetadata.DeployedBin = fetchedData.deployedBin
+	if err = generator.compareDeployedBytecodeWithRpcs(contractMetadata); err != nil {
+		return err
+	}
 	if contractMetadata.InitBin, err = generator.removeDeploymentSalt(fetchedData.deploymentTx.Input, contractMetadata.DeploymentSalt); err != nil {
 		return err
 	}
@@ -69,6 +77,9 @@ func (generator *bindGenGeneratorRemote) senderCreatorHandler(contractMetadata *
 	contractMetadata.DeployedBin, err = generator.contractDataClient.FetchDeployedBytecode("eth", contractMetadata.Deployments["eth"])
 	if err != nil {
 		return fmt.Errorf("error fetching deployed bytecode: %w", err)
+	}
+	if err = generator.compareDeployedBytecodeWithRpcs(contractMetadata); err != nil {
+		return err
 	}
 
 	if err := generator.compareBytecodeWithOp(contractMetadata, false, true); err != nil {
@@ -180,6 +191,50 @@ func (generator *bindGenGeneratorRemote) compareBytecodeWithOp(contractMetadataE
 				"bytecodeOp", opContractData.deployedBin,
 			)
 		}
+	}
+
+	return nil
+}
+
+func (generator *bindGenGeneratorRemote) compareDeployedBytecodeWithRpcs(contractMetadata *remoteContractMetadata) error {
+	if contractMetadata.Deployments["eth"] != "" {
+		bytecodeEth, err := generator.rpcClientEth.CodeAt(context.Background(), common.HexToAddress(contractMetadata.Deployments["eth"]), nil)
+		if err != nil {
+			generator.logger.Crit(
+				"Error getting deployed bytecode from Ethereum RPC",
+				"err", err,
+			)
+		}
+		bytecodeEthHex := common.Bytes2Hex(bytecodeEth)
+		if !strings.EqualFold(strings.TrimPrefix(contractMetadata.DeployedBin, "0x"), bytecodeEthHex) {
+			generator.logger.Crit(
+				"Deployment bytecode from Ethereum RPC doesn't match bytecode from Etherscan",
+				"rpcBytecode", bytecodeEthHex,
+				"etherscanBytecode", contractMetadata.DeployedBin,
+			)
+		}
+	} else {
+		generator.logger.Warn("Unable to compare bytecode from Etherscan against Ethereum RPC client, no deployment address provided")
+	}
+
+	if contractMetadata.Deployments["op"] != "" {
+		bytecodeOp, err := generator.rpcClientOp.CodeAt(context.Background(), common.HexToAddress(contractMetadata.Deployments["op"]), nil)
+		if err != nil {
+			generator.logger.Crit(
+				"Error getting deployed bytecode from Optimism RPC",
+				"err", err,
+			)
+		}
+		bytecodeOpHex := common.Bytes2Hex(bytecodeOp)
+		if !strings.EqualFold(strings.TrimPrefix(contractMetadata.DeployedBin, "0x"), bytecodeOpHex) {
+			generator.logger.Crit(
+				"Deployment bytecode from Optimism RPC doesn't match bytecode from Etherscan",
+				"rpcBytecode", bytecodeOpHex,
+				"etherscanBytecode", contractMetadata.DeployedBin,
+			)
+		}
+	} else {
+		generator.logger.Warn("Unable to compare bytecode from Etherscan against Optimism RPC client, no deployment address provided")
 	}
 
 	return nil

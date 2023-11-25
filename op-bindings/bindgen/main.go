@@ -6,6 +6,7 @@ import (
 
 	"github.com/ethereum-optimism/optimism/op-bindings/etherscan"
 	oplog "github.com/ethereum-optimism/optimism/op-service/log"
+	"github.com/ethereum/go-ethereum/ethclient"
 	gethLog "github.com/ethereum/go-ethereum/log"
 	"github.com/urfave/cli/v2"
 )
@@ -86,6 +87,7 @@ func setupLogger(c *cli.Context) (gethLog.Logger, error) {
 func generateBindings(c *cli.Context) error {
 	logger, _ := setupLogger(c)
 
+	var err error
 	switch c.Command.Name {
 	case "all":
 		localBindingsGenerator := parseConfigLocal(logger, c)
@@ -93,11 +95,14 @@ func generateBindings(c *cli.Context) error {
 			gethLog.Crit("Error generating local bindings", "error", err.Error())
 		}
 
-		remoteBindingsGenerator := parseConfigRemote(logger, c)
+		var remoteBindingsGenerator bindGenGeneratorRemote
+		if remoteBindingsGenerator, err = parseConfigRemote(logger, c); err != nil {
+			gethLog.Crit("Error parsing remote config", "error", err.Error())
+		}
 		if err := remoteBindingsGenerator.generateBindings(); err != nil {
 			gethLog.Crit("Error generating remote bindings", "error", err.Error())
 		}
-		
+
 		return nil
 	case "local":
 		localBindingsGenerator := parseConfigLocal(logger, c)
@@ -106,7 +111,10 @@ func generateBindings(c *cli.Context) error {
 		}
 		return nil
 	case "remote":
-		remoteBindingsGenerator := parseConfigRemote(logger, c)
+		var remoteBindingsGenerator bindGenGeneratorRemote
+		if remoteBindingsGenerator, err = parseConfigRemote(logger, c); err != nil {
+			gethLog.Crit("Error parsing remote config", "error", err.Error())
+		}
 		if err := remoteBindingsGenerator.generateBindings(); err != nil {
 			gethLog.Crit("Error generating remote bindings", "error", err.Error())
 		}
@@ -135,7 +143,7 @@ func parseConfigLocal(logger gethLog.Logger, c *cli.Context) bindGenGeneratorLoc
 	}
 }
 
-func parseConfigRemote(logger gethLog.Logger, c *cli.Context) bindGenGeneratorRemote {
+func parseConfigRemote(logger gethLog.Logger, c *cli.Context) (bindGenGeneratorRemote, error) {
 	baseConfig := parseConfigBase(logger, c)
 	generator := bindGenGeneratorRemote{
 		bindGenGeneratorBase:  baseConfig,
@@ -143,7 +151,15 @@ func parseConfigRemote(logger gethLog.Logger, c *cli.Context) bindGenGeneratorRe
 		etherscanApiKeyOp:  c.String(EtherscanApiKeyOpFlagName),
 	}
 	generator.contractDataClient = etherscan.NewClient(generator.etherscanApiKeyEth, generator.etherscanApiKeyOp)
-	return generator
+
+	var err error
+	if generator.rpcClientEth, err = ethclient.Dial(c.String(RpcUrlEthFlagName)); err != nil {
+		return bindGenGeneratorRemote{}, fmt.Errorf("error initializing Ethereum client: %s", err)
+	}
+	if generator.rpcClientOp, err = ethclient.Dial(c.String(RpcUrlOpFlagName)); err != nil {
+		return bindGenGeneratorRemote{}, fmt.Errorf("error initializing Optimism client: %s", err)
+	}
+	return generator, nil
 }
 
 func baseFlags() []cli.Flag {
@@ -199,15 +215,15 @@ func remoteFlags() []cli.Flag {
 			Usage: "API key to make queries to Etherscan for Optimism",
 			Required: true,
 		},
-		// &cli.StringFlag{
-		// 	Name:  RpcUrlEthFlagName,
-		// 	Usage: "RPC URL (with API key if required) to query Ethereum",
-		// 	Required: true,
-		// },
-		// &cli.StringFlag{
-		// 	Name:  RpcUrlOpFlagName,
-		// 	Usage: "RPC URL (with API key if required) to query Optimism",
-		// 	Required: true,
-		// },
+		&cli.StringFlag{
+			Name:  RpcUrlEthFlagName,
+			Usage: "RPC URL (with API key if required) to query Ethereum",
+			Required: true,
+		},
+		&cli.StringFlag{
+			Name:  RpcUrlOpFlagName,
+			Usage: "RPC URL (with API key if required) to query Optimism",
+			Required: true,
+		},
 	}
 }
